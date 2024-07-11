@@ -1,0 +1,7 @@
+sentence-transformers
+#torch
+pypdf
+qdrant-client
+rank_bm25
+sentencepiece
+memray
