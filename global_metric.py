@@ -4,9 +4,10 @@ import numpy as np
 from transformers import AutoTokenizer, AutoModelForSequenceClassification
 import torch
 import math
+from tqdm import tqdm  # Importer tqdm pour la barre de progression
 
 # Définition la clé API Cohere
-os.environ['COHERE_API_KEY'] = "RwbHpQF9iH6VGmEhpS1vrkimGJMxF6sOVkhredbs"
+os.environ['COHERE_API_KEY'] = "f8vAkTiOnbTQEMLqOc42gtixji8qM1ifzR7saiaZ"
 
 # Chargement de l'index
 index = DiskVectorIndex("Cohere/trec-rag-2024-index")
@@ -35,13 +36,14 @@ models, tokenizers = load_models(reranker_model_names)
 sigmoid = torch.nn.Sigmoid()
 
 # Fonction pour reranker les candidats en utilisant le modèle de rerank
-def rerank(query, candidates, models, tokenizers):
+def rerank(query, candidates, models, tokenizers, device):
     rerank_scores = {model_name: [] for model_name in models.keys()}
     for model_name, model in models.items():
+        model.to(device)  # Déplace le modèle sur le GPU
         tokenizer = tokenizers[model_name]
         for candidate in candidates:
             doc_text = candidate['doc']['segment']
-            inputs = tokenizer(query, doc_text, return_tensors='pt', truncation=True)
+            inputs = tokenizer(query, doc_text, return_tensors='pt', truncation=True).to(device)
             with torch.no_grad():
                 outputs = model(**inputs)
             logits = outputs.logits
@@ -49,9 +51,11 @@ def rerank(query, candidates, models, tokenizers):
             probs = sigmoid(logits).cpu().numpy()
             score = probs[0][1] if probs.shape[1] == 2 else np.max(probs)
             rerank_scores[model_name].append(score)
+            # Clear cache and free memory
+            del inputs, outputs, logits, probs
+            torch.cuda.empty_cache()
     ranked_indices = {model_name: np.argsort(scores)[::-1] for model_name, scores in rerank_scores.items()}
     return ranked_indices, rerank_scores
-
 
 # Fonction pour charger les données qrel
 def load_qrel(qrel_file):
@@ -67,13 +71,17 @@ def load_qrel(qrel_file):
 
 # Fonction pour calculer la précision à k (Precision@k)
 def precision_at_k(retrieved_docs, relevant_docs, query_id, k):
+    #print("retrieved_docs", retrieved_docs)
+    # print("\nrelevant_docs\n", relevant_docs)
+    # print("#######################################################################################################")
+    
     relevant = relevant_docs.get(query_id, {})
     relevant_set = set(doc_id for doc_id, rel in relevant.items() if rel > 0)
     retrieved_relevant = 0
     for i, doc_id in enumerate(retrieved_docs[:k]):
         if doc_id in relevant_set:
             retrieved_relevant += 1
-    return retrieved_relevant / k
+    return retrieved_relevant / k if k > 0 else 0
 
 # Fonction pour calculer l'Average Precision (AP)
 def average_precision(retrieved_docs, relevant_docs, query_id):
@@ -134,54 +142,56 @@ def recall_at_k(retrieved_docs, relevant_docs, query_id, k):
     
     return num_relevant_retrieved / num_relevant_total if num_relevant_total > 0 else 0
 
-
 # Fonction pour évaluer les modèles
 def evaluate_models(queries, index, models, tokenizers, relevant_docs):
     # Stocker les résultats des évaluations
-    model_metrics = {model_name: {'precision@k': [], 'recall': [], 'ndcg@k': [], 'map': []} for model_name in models.keys()}
+    model_metrics = {model_name: {'precision@k': [], 'recall@k': [], 'ndcg@k': [], 'map': []} for model_name in models.keys()}
 
-    for line in queries:
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")  # Définir le périphérique
+    for line in tqdm(queries, desc="Processing Queries", unit="query"):
         query_id, query = line.strip().split('\t')
         
-        print(f"Query ID: {query_id}")
-        print(f"Query: {query}")
-        print("=========")
+        docs = index.search(query, top_k=100)
+        if not docs:
+            continue  # Passer à la requête suivante si aucun document n'est retourné
         
-        docs = index.search(query, top_k=10)
-        ranked_indices, rerank_scores = rerank(query, docs, models, tokenizers)
+        ranked_indices, rerank_scores = rerank(query, docs, models, tokenizers, device)
 
         for model_name, indices in ranked_indices.items():
-            ranked_docs = [docs[idx]['doc']['docid'] for idx in indices]
+            ranked_docs = [docs[idx]['doc']['docid'].split('#')[0] for idx in indices]  
             relevant_docs_for_query = [doc_id for doc_id in relevant_docs.get(query_id, [])]
+            
+            #print("ranked_docs", ranked_docs)
+            
 
-
-            print(f"\nResults for model: {model_name}")
-            for rank, idx in enumerate(indices):
-                doc = docs[idx]
-                print(f"Rank {rank + 1}: Document ID {doc['doc']['docid']}, Score {rerank_scores[model_name][idx]}")
-                #print(doc)
-                print("=========")
-                
             precision_k = precision_at_k(ranked_docs, relevant_docs, query_id, k=10)
             recall_k = recall_at_k(ranked_docs, relevant_docs, query_id, k=100)
             map = mean_average_precision({query_id: ranked_docs}, relevant_docs)
             ndcg = normalized_discounted_cumulative_gain(ranked_docs, relevant_docs, query_id, k=10)
+            
+            # print(f"Model: {model_name}")
+            # print(f"Average Precision@10: {precision_k:.4f}")
+            # print(f"Average Recall: {recall_k:.4f}")
+            # print(f"Average NDCG@10: {ndcg:.4f}")
+            # print(f"Average MAP: {map:.4f}")
+            # print("=========")
+            
 
             model_metrics[model_name]['precision@k'].append(precision_k)
-            model_metrics[model_name]['recall'].append(recall_k)
+            model_metrics[model_name]['recall@k'].append(recall_k)
             model_metrics[model_name]['ndcg@k'].append(ndcg)
             model_metrics[model_name]['map'].append(map)
 
     # Calcul des moyennes des métriques pour chaque modèle
     for model_name, metrics in model_metrics.items():
         precision_at_k_avg = np.mean(metrics['precision@k'])
-        recall_avg = np.mean(metrics['recall'])
+        recall_avg = np.mean(metrics['recall@k'])
         ndcg_at_k_avg = np.mean(metrics['ndcg@k'])
         map_avg = np.mean(metrics['map'])
         
         print(f"Model: {model_name}")
         print(f"Average Precision@10: {precision_at_k_avg:.4f}")
-        print(f"Average Recall: {recall_avg:.4f}")
+        print(f"Average Recall@100: {recall_avg:.4f}")
         print(f"Average NDCG@10: {ndcg_at_k_avg:.4f}")
         print(f"Average MAP: {map_avg:.4f}")
         print("=========")
