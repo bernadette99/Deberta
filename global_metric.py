@@ -7,17 +7,17 @@ import math
 from tqdm import tqdm  # Importer tqdm pour la barre de progression
 
 # Définition la clé API Cohere
-os.environ['COHERE_API_KEY'] = "f8vAkTiOnbTQEMLqOc42gtixji8qM1ifzR7saiaZ"
+os.environ['COHERE_API_KEY'] = ""
 
 # Chargement de l'index
 index = DiskVectorIndex("Cohere/trec-rag-2024-index")
 
 # Liste des modèles de reranking à utiliser
 reranker_model_names = [
-    'cross-encoder/ms-marco-MiniLM-L-6-v2',
-    'cross-encoder/stsb-roberta-large',
+    'cross-encoder/ms-marco-MiniLM-L-12-v2',
+    'cross-encoder/qnli-electra-base',
     'jinaai/jina-reranker-v2-base-multilingual',
-    'cross-encoder/nli-deberta-v3-base'
+    'BAAI/bge-reranker-v2-m3'
 ]
 
 # Chargement des modèles et tokenizers
@@ -59,14 +59,27 @@ def rerank(query, candidates, models, tokenizers, device):
 
 # Fonction pour charger les données qrel
 def load_qrel(qrel_file):
+    
+    """
+    Charge les données de pertinence depuis un fichier QREL.
+
+    Args:
+        qrel_file (str): Chemin du fichier QREL.
+
+    Returns:
+        dict: Dictionnaire des niveaux de pertinence par identifiant de requête et document.
+    """
     relevance = {}
-    with open(qrel_file, 'r') as file:
-        for line in file:
-            query_id, _, doc_id, relevance_level = line.strip().split()
-            relevance_level = int(relevance_level)
-            if query_id not in relevance:
-                relevance[query_id] = {}
-            relevance[query_id][doc_id] = relevance_level
+    try:
+        with open(qrel_file, 'r') as file:
+            for line in file:
+                query_id, _, doc_id, relevance_level = line.strip().split()
+                relevance_level = int(relevance_level)
+                if query_id not in relevance:
+                    relevance[query_id] = {}
+                relevance[query_id][doc_id] = relevance_level
+    except Exception as e:
+        print(f"Erreur lors de la lecture du fichier QREL: {e}")
     return relevance
 
 # Fonction pour calculer la précision à k (Precision@k)
