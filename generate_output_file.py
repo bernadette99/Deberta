@@ -21,10 +21,11 @@ device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 # Liste des modèles de reranking à utiliser
 reranker_model_names = [
-    'cross-encoder/ms-marco-MiniLM-L-6-v2',
-    'cross-encoder/stsb-roberta-large',
+    'cross-encoder/ms-marco-MiniLM-L-12-v2',
+    'cross-encoder/qnli-electra-base',
     'jinaai/jina-reranker-v2-base-multilingual',
-    'cross-encoder/nli-deberta-v3-base'
+    'BAAI/bge-reranker-v2-m3'
+    
 ]
 
 # Charger les modèles et tokenizers
@@ -108,12 +109,13 @@ def evaluate_with_trec_eval(qrel_file, results_file):
     except Exception as e:
         print(f"Erreur lors de l'évaluation avec TREC eval: {e}")
 
-
+# cette fonction permet de supprimer les caractères spéciaux dans le nom du fichier
 def sanitize_filename(filename):
     return re.sub(r'[<>:"/\\|?*]', '_', filename)
 
+# cette fonction permet de générer le nom du fichier de résultats
 def get_sanitized_results_filename(model_name):
-    return f"{sanitize_filename(model_name)}_results.txt"
+    return f"final_{sanitize_filename(model_name)}_results.txt"
 
 
 
@@ -121,7 +123,7 @@ if __name__ == '__main__':
     
     qrel_file = '../donnees-msmarco/qrels.rag24.raggy-dev.txt'
     
-    query_file = '../donnees-msmarco/topics.rag24.raggy-dev.txt'
+    query_file = '../donnees-msmarco/topics.rag24.test.txt'
     try:
         with open(query_file, 'r') as file:
             queries = file.readlines()
@@ -147,7 +149,7 @@ if __name__ == '__main__':
 
         # Rerank les résultats avec tous les modèles
         ranked_indices, rerank_scores = rerank(query, docs, models, tokenizers)
-        print("Reranking done")
+        #print("Reranking done")
 
         for model_name, indices in ranked_indices.items():
             # Préparation des résultats pour le modèle en cours
